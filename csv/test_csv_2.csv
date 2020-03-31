@@ -1,0 +1,5 @@
+src,dst
+csv2_foo_1,csv2_bar_1
+csv2_foo_2,csv2_bar_2
+csv2_foo_3,csv2_bar_3
+None,csv2_bar_4
