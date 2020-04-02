@@ -1,5 +1,5 @@
-src,dst
-csv2_foo_1,csv2_bar_1
-csv2_foo_2,csv2_bar_2
-csv2_foo_3,csv2_bar_3
-None,csv2_bar_4
+dst,src
+s3://csv1_bar_1/1234.txt,test_files/test1.txt
+s3://csv1_bar_2/1234.txt,test_files/test2.txt
+s3://csv1_bar_3/1234.txt,test_files/test3.txt
+s3://csv1_bar_4/1234.txt,test_files/test4.txt

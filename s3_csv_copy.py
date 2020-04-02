@@ -10,7 +10,6 @@ TODOS:
     * describe auth
 * Add boto copy functionality
 * Use an ACL rather than two copy operations
-* file db for errors and succ_xfer_db
 """
 import argparse
 import concurrent.futures as futures
@@ -20,6 +19,7 @@ import os
 import sys
 import time
 import random
+import re
 import yaml
 
 
@@ -237,7 +237,7 @@ def copy_csv_file(file_path):
         ):
             msg = "Error bad CSV field Headers: "
             msg += "file: %s, Headers: %s" % (args["file_path"], reader.fieldnames)
-            ERRORS.add_error(msg, args["err_tpe"])
+            ERRORS.add_error(msg)
             return False
         with futures.ThreadPoolExecutor(
             max_workers=CFG.max_threads_lines_per_file
@@ -258,6 +258,7 @@ def try_s3cp(row, line_num, args):
       * args['file_path']
       * args['err_tpe']
     """
+    # pylint: disable=too-many-statements
     if check_stop_copy():
         return False
 
@@ -269,23 +270,70 @@ def try_s3cp(row, line_num, args):
         LOG.debug(msg)
         time.sleep(CFG.sleep_timeout)
 
+    def check_s3_url(url):
+        """ check if string is a valid aws s3 url """
+        if re.match("^s3://([^/]+)/(.*?([^/]+))$", url) is not None:
+            return True
+        return False
+
+    def check_file_exists(file_path):
+        """ check if a file exits """
+        if os.path.isfile(file_path):
+            return True
+        return False
+
     def copy(usr, paswd, src, dst):
         """
          * try to copy an obj up to CFG.max_cp_tries times
-         * handle exceptions and add errors to the errors dictionary if needed
+         * handle custom exceptions and add errors to the errors dictionary if needed
          * return True/False
         """
+        # pylint: disable=too-many-return-statements
+
+        # Check if src is local file or s3 obj and set copy type boto.copy() or boto.upload_file()
+        if check_s3_url(src):
+            cp_type = "copy"
+        elif check_file_exists(src):
+            cp_type = "upload_file"
+        else:
+            msg = "src was not file or s3_object_url. src: {}. file: {} Line Number: {}".format(
+                src, args["file_path"], line_num
+            )
+            ERRORS.add_error(msg)
+            return False
+
+        if not check_s3_url(dst):
+            return False
+
+        # todo: Check if file has already been copied
+
         for try_num in range(CFG.max_cp_tries):
             try:
-                s3cp(usr, paswd, src, dst)
+                s3cp(cp_type, usr, paswd, src, dst)
+            except DebugS3cpSuccess:
+                LOG.debug("Debug_copy_success - src: %s, dst: %s", src, dst)
+                return True
+            except AlreadyTransfered:
+                LOG.info(
+                    "Transfer found in successful transfer db Skipping: %s,%s", src, dst
+                )
+                return True
+            except DebugS3cpRetry:
+                LOG.debug("Debug_copy_retry - src: %s, dst: %s", src, dst)
+                sleep(try_num)
             except S3cpBadArgException as exc:
                 msg = "Bad Arguments for s3cp(): {}".format(exc)
                 ERRORS.add_error(msg, str(args["err_tpe"]))
                 return False
-            except S3cpFailure:
-                sleep(try_num)
-            else:
-                return True
+            except S3cpBadCpType as exc:
+                msg = "cp_type should be 'copy' or 'upload_file'. cp_type: {}".format(
+                    exc
+                )
+                ERRORS.add_error(msg)
+                return False
+            # todo: if boto copy fails we need to except here
+            # except S3cpFailure:
+            #     sleep(try_num)
         return False
 
     if not row[CFG.src_field_header] or not row[CFG.dst_field_header]:
@@ -327,27 +375,26 @@ def try_s3cp(row, line_num, args):
     return False
 
 
-def s3cp(usr, paswd, src, dst):
+def s3cp(cp_type, usr, paswd, src, dst):
     """ doc string """
 
-    for key, value in locals().items():
-        if not key:
-            raise S3cpBadArgException(key, value)
-
+    # todo: success check based on src/dest checksum or size
     if not CFG.no_retry:
         if SUCCDB.check_values(src, dst):
-            LOG.info(
-                "Transfer found in successful transfer db Skipping: %s,%s", src, dst
-            )
-            return True
+            raise AlreadyTransfered()
 
     if CFG.debug_int is not None:
-        LOG.debug("src: %s, dst: %s", src, dst)
         if CFG.debug_int >= random.randint(0, 100):
-            raise S3cpFailure()
-    return True
+            raise DebugS3cpRetry()
+        raise DebugS3cpSuccess()
     # todo: add boto copy commands
-    # raise boto / other exceptions
+    if cp_type == "copy":
+        pass
+    elif cp_type == "upload_file":
+        pass
+        # s3_connect.upload_file(local_name, bucket, file_key_name)
+    else:
+        raise S3cpBadCpType(cp_type)
 
 
 def get_csv_files(csv_dir):
@@ -531,12 +578,24 @@ class CustomException(Exception):
     """ Base class for other exceptions """
 
 
-class S3cpFailure(CustomException):
+class DebugS3cpRetry(CustomException):
     """ boto copy flailed """
+
+
+class S3cpBadCpType(CustomException):
+    """ cp_type should be 'copy' or 'upload_file' """
 
 
 class S3cpBadArgException(CustomException):
     """ bad args sent to s3cp """
+
+
+class DebugS3cpSuccess(CustomException):
+    """ debug mode completed without failing random int % """
+
+
+class AlreadyTransfered(CustomException):
+    """ The dst exists test found the obj. skipping % """
 
 
 if __name__ == "__main__":

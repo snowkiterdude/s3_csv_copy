@@ -1,5 +1,5 @@
-dst,src
-csv1_bar_1,csv1_foo_1
-csv1_bar_2,csv1_foo_2
-csv1_bar_3,csv1_foo_3
-csv1_bar_4,csv1_foo_4
+src,dst
+s3://csv1_foo_1/123.txt,s3://csv1_bar_1/123.txt
+s3://csv1_foo_2/123.txt,s3://csv1_bar_2/123.txt
+s3://csv1_foo_3/123.txt,s3://csv1_bar_3/123.txt
+s3://csv1_foo_4/123.txt,s3://csv1_bar_4/123.txt
