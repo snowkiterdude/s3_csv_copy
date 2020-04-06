@@ -216,59 +216,182 @@ def copy_csv_file(file_path):
     if check_stop_copy():
         return False
 
-    args = {}
-    args["file_path"] = str(file_path)
-    args["err_tpe"] = str(file_path) + "_errors"
-    args["cp_err_list"] = "failed_files_main_transfer"
-    args["cp_owner_err_list"] = "failed_files_dst_owner"
-    with open(args["file_path"], newline="") as csvfile:
+    csv_args = {}
+    csv_args["file_path"] = str(file_path)
+    csv_args["err_tpe"] = str(file_path) + "_errors"
+    csv_args["cp_err_list"] = "failed_files_main_transfer"
+    csv_args["cp_owner_err_list"] = "failed_files_dst_owner"
+    ERRORS.create_error_type(csv_args["err_tpe"])
+
+    with open(csv_args["file_path"], newline="") as csvfile:
         try:
             dialect = csv.Sniffer().sniff(csvfile.read(1024))
             csvfile.seek(0)
             reader = csv.DictReader(csvfile, dialect=dialect)
         except csv.Error as err:
-            ERRORS.add_error("{}: {}".format(args["file_path"], err))
+            ERRORS.add_error("{}: {}".format(csv_args["file_path"], err))
             return False
 
-        ERRORS.create_error_type(args["err_tpe"])
         if (
             CFG.src_field_header not in reader.fieldnames
             or CFG.dst_field_header not in reader.fieldnames
         ):
-            msg = "Error bad CSV field Headers: "
-            msg += "file: %s, Headers: %s" % (args["file_path"], reader.fieldnames)
+            msg = "Error bad CSV field Headers: - file: {}, Headers: {}".format(
+                csv_args["file_path"], reader.fieldnames
+            )
             ERRORS.add_error(msg)
             return False
+
         with futures.ThreadPoolExecutor(
             max_workers=CFG.max_threads_lines_per_file
         ) as executor:
             for row in reader:
-                executor.submit(try_s3cp, row, reader.line_num, args)
+                row_args = {}
+                row_args["src"] = row[CFG.src_field_header]
+                row_args["dst"] = row[CFG.dst_field_header]
+                row_args["line_num"] = reader.line_num
+                if not row[CFG.src_field_header] or not row[CFG.dst_field_header]:
+                    msg = "Bad CSV Headers. file: {}, line: {}, src: {}, dst: {}".format(
+                        csv_args["file_path"],
+                        row_args["line_num"],
+                        row_args["src"],
+                        row_args["dst"],
+                    )
+                    ERRORS.add_error(msg, csv_args["err_tpe"])
+                    return False
+                executor.submit(cp_row, csv_args, row_args)
     return True
 
 
-def try_s3cp(row, line_num, args):
+def cp_row(csv_args, row_args):
     """
-    use the s3copy function to move an obj in s3
-    on fail sleep and try again
-    after third try add an error the the errors dictionary
+    Start copy operations needed for each row.
+    Sets the user and password() for each copy operation.
+                e.g. AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY
     * args
-      * row
-      * line_num
-      * args['file_path']
-      * args['err_tpe']
+      * csv_args
+        * csv_args["file_path"]
+        * csv_args["err_tpe"]
+        * csv_args["cp_err_list"]
+        * csv_args["cp_owner_err_list"]
+      * row_args
+        * row_args["src"]
+        * row_args["dst"]
+        * row_args["line_num"]
     """
-    # pylint: disable=too-many-statements
+    # todo: look into copying with ACL instead of copying twice
+
     if check_stop_copy():
         return False
 
+    row_args["usr"] = get_env_var("AWS_ACCESS_KEY_ID")
+    row_args["paswd"] = get_env_var("AWS_SECRET_ACCESS_KEY")
+    if try_s3cp(csv_args, row_args):
+        if CFG.dst_owner:
+            row_args["usr"] = get_env_var("DST_OWNER_AWS_ACCESS_KEY_ID")
+            row_args["paswd"] = get_env_var("DST_OWNER_AWS_SECRET_ACCESS_KEY")
+            if try_s3cp(csv_args, row_args):
+                # both copies where successful
+                SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
+                SUCCDB.add("{0},{0}".format(row_args["dst"]))
+                return True
+            # owner copy failed, but main transfer copy was successful
+            SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
+            msg = "{0},{0}".format(row_args["dst"])
+            ERRORS.add_error(
+                msg, csv_args["err_tpe"], csv_args["cp_owner_err_list"], False
+            )
+        else:
+            # copy successful, no owner copy needed
+            SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
+            return True
+    else:
+        # main transfer copy failed
+        msg = "{},{}".format(row_args["src"], row_args["dst"])
+        ERRORS.add_error(msg, csv_args["err_tpe"], csv_args["cp_err_list"], False)
+    return False
+
+
+def try_s3cp(csv_args, row_args):
+    """
+    Try to copy an obj up to CFG.max_cp_tries times
+    On fail sleep and try again
+    After third try add an error the the errors dictionary
+    Return True/False
+    * args
+      * csv_args
+        * csv_args["file_path"]
+        * csv_args["err_tpe"]
+        * csv_args["cp_err_list"]
+        * csv_args["cp_owner_err_list"]
+      * row_args
+        * row_args["src"]
+        * row_args["dst"]
+        * row_args["line_num"]
+        * row_args["usr"]
+        * row_args["paswd"]
+    """
+
     def sleep(try_num):
         """ sleep if copy failed before next try """
-        msg = "Sleeping {} seconds: failed try {} while processing file {} line number {}".format(
-            CFG.sleep_timeout, (try_num + 1), args["file_path"], line_num
+        LOG.debug(
+            "Sleeping %s seconds: failed try %s while processing file %s line number %s",
+            CFG.sleep_timeout,
+            try_num,
+            csv_args["file_path"],
+            row_args["line_num"],
         )
-        LOG.debug(msg)
         time.sleep(CFG.sleep_timeout)
+
+    for try_num in range(CFG.max_cp_tries):
+        try:
+            if check_stop_copy():
+                return False
+            s3cp(csv_args, row_args)
+        except DebugS3cpSuccess:
+            LOG.debug(
+                "Debug_copy_success - src: %s, dst: %s",
+                row_args["src"],
+                row_args["dst"],
+            )
+            return True
+        except AlreadyTransfered:
+            LOG.info(
+                "Transfer found in successful transfer db Skipping: %s,%s",
+                row_args["src"],
+                row_args["dst"],
+            )
+            return True
+        except DebugS3cpRetry:
+            LOG.debug(
+                "Debug_copy_retry - src: %s, dst: %s", row_args["src"], row_args["dst"]
+            )
+            sleep(try_num + 1)
+        except S3cpBadArgException:
+            return False
+        # todo: if boto copy fails we need to except here and sleep
+    return False
+
+
+def s3cp(csv_args, row_args):
+    """
+    Copy a object to AWS s3 using python boto3
+    The source object may be a local file or an object in s3
+    The destination object must always be an s3 object
+    Return True/False
+    * args
+      * csv_args
+        * csv_args["file_path"]
+        * csv_args["err_tpe"]
+        * csv_args["cp_err_list"]
+        * csv_args["cp_owner_err_list"]
+      * row_args
+        * row_args["src"]
+        * row_args["dst"]
+        * row_args["line_num"]
+        * row_args["usr"]
+        * row_args["paswd"]
+    """
 
     def check_s3_url(url):
         """ check if string is a valid aws s3 url """
@@ -276,125 +399,52 @@ def try_s3cp(row, line_num, args):
             return True
         return False
 
-    def check_file_exists(file_path):
-        """ check if a file exits """
+    def check_local_file_exists(file_path):
+        """ check if a local file exits """
         if os.path.isfile(file_path):
             return True
         return False
 
-    def copy(usr, paswd, src, dst):
-        """
-         * try to copy an obj up to CFG.max_cp_tries times
-         * handle custom exceptions and add errors to the errors dictionary if needed
-         * return True/False
-        """
-        # pylint: disable=too-many-return-statements
+    def check_s3_obj_exists(s3_path):
+        """ Check if an s3 object exists """
+        LOG.error("todo: check s3 obj %s", s3_path)
 
+    def get_src_type(src):
+        """ Check if src is a valid local file or object in s3 and return 'file', 's3', or None """
         # Check if src is local file or s3 obj and set copy type boto.copy() or boto.upload_file()
-        if check_s3_url(src):
-            cp_type = "copy"
-        elif check_file_exists(src):
-            cp_type = "upload_file"
-        else:
-            msg = "src was not file or s3_object_url. src: {}. file: {} Line Number: {}".format(
-                src, args["file_path"], line_num
-            )
-            ERRORS.add_error(msg)
-            return False
-
-        if not check_s3_url(dst):
-            return False
-
-        # todo: Check if file has already been copied
-
-        for try_num in range(CFG.max_cp_tries):
-            try:
-                s3cp(cp_type, usr, paswd, src, dst)
-            except DebugS3cpSuccess:
-                LOG.debug("Debug_copy_success - src: %s, dst: %s", src, dst)
-                return True
-            except AlreadyTransfered:
-                LOG.info(
-                    "Transfer found in successful transfer db Skipping: %s,%s", src, dst
-                )
-                return True
-            except DebugS3cpRetry:
-                LOG.debug("Debug_copy_retry - src: %s, dst: %s", src, dst)
-                sleep(try_num)
-            except S3cpBadArgException as exc:
-                msg = "Bad Arguments for s3cp(): {}".format(exc)
-                ERRORS.add_error(msg, str(args["err_tpe"]))
-                return False
-            except S3cpBadCpType as exc:
-                msg = "cp_type should be 'copy' or 'upload_file'. cp_type: {}".format(
-                    exc
-                )
-                ERRORS.add_error(msg)
-                return False
-            # todo: if boto copy fails we need to except here
-            # except S3cpFailure:
-            #     sleep(try_num)
-        return False
-
-    if not row[CFG.src_field_header] or not row[CFG.dst_field_header]:
-        msg = "Bad CSV Headers. file: {}, line: {}, row: {}".format(
-            args["file_path"], line_num, row
+        if check_s3_url(src) and check_s3_obj_exists(src):
+            return "s3"
+        if check_local_file_exists(src):
+            return "file"
+        msg = "src was not file or s3_object_url. src: {}. file: {} Line Number: {}".format(
+            src, csv_args["file_path"], row_args["line_num"]
         )
-        ERRORS.add_error(msg, args["err_tpe"])
-        return False
+        ERRORS.add_error(msg)
+        return None
 
-    # todo: look into copying with ACL instead of copying twice
-    src = row[CFG.src_field_header]
-    dst = row[CFG.dst_field_header]
-    if copy(
-        get_env_var("AWS_ACCESS_KEY_ID"), get_env_var("AWS_SECRET_ACCESS_KEY"), src, dst
-    ):
-        if CFG.dst_owner:
-            if copy(
-                get_env_var("DST_OWNER_AWS_ACCESS_KEY_ID"),
-                get_env_var("DST_OWNER_AWS_SECRET_ACCESS_KEY"),
-                dst,
-                dst,
-            ):
-                # both copies where successful
-                SUCCDB.add("{},{}".format(src, dst))
-                SUCCDB.add("{0},{0}".format(dst))
-                return True
-            # owner copy failed, but main transfer copy was successful
-            SUCCDB.add("{},{}".format(src, dst))
-            msg = "{0},{0}".format(dst)
-            ERRORS.add_error(msg, args["err_tpe"], args["cp_owner_err_list"], False)
-        else:
-            # copy successful, no owner copy needed
-            SUCCDB.add("{},{}".format(src, dst))
-            return True
-    else:
-        # main transfer copy failed
-        msg = "{},{}".format(src, dst)
-        ERRORS.add_error(msg, args["err_tpe"], args["cp_err_list"], False)
-    return False
-
-
-def s3cp(cp_type, usr, paswd, src, dst):
-    """ doc string """
-
-    # todo: success check based on src/dest checksum or size
-    if not CFG.no_retry:
-        if SUCCDB.check_values(src, dst):
-            raise AlreadyTransfered()
-
+    # debug mode
     if CFG.debug_int is not None:
+        if not CFG.no_retry:
+            if SUCCDB.check_values(row_args["src"], row_args["dst"]):
+                raise AlreadyTransfered()
         if CFG.debug_int >= random.randint(0, 100):
             raise DebugS3cpRetry()
         raise DebugS3cpSuccess()
-    # todo: add boto copy commands
-    if cp_type == "copy":
-        pass
-    elif cp_type == "upload_file":
-        pass
-        # s3_connect.upload_file(local_name, bucket, file_key_name)
-    else:
-        raise S3cpBadCpType(cp_type)
+
+    src_type = get_src_type(row_args["src"])
+    if src_type is None:
+        LOG.error(
+            "src type is not a present local file or an s3 object: %s", row_args["src"]
+        )
+        raise S3cpBadArgException()
+
+    if not check_s3_url(row_args["dst"]):
+        LOG.error(
+            "dst is not a present local file or an s3 object: %s", row_args["src"]
+        )
+        raise S3cpBadArgException()
+
+    # todo: add boto commands here
 
 
 def get_csv_files(csv_dir):
@@ -582,20 +632,16 @@ class DebugS3cpRetry(CustomException):
     """ boto copy flailed """
 
 
-class S3cpBadCpType(CustomException):
-    """ cp_type should be 'copy' or 'upload_file' """
-
-
-class S3cpBadArgException(CustomException):
-    """ bad args sent to s3cp """
-
-
 class DebugS3cpSuccess(CustomException):
     """ debug mode completed without failing random int % """
 
 
 class AlreadyTransfered(CustomException):
     """ The dst exists test found the obj. skipping % """
+
+
+class S3cpBadArgException(CustomException):
+    """ bad args sent to s3cp """
 
 
 if __name__ == "__main__":
