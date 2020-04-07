@@ -21,6 +21,8 @@ import time
 import random
 import re
 import yaml
+import boto3
+import botocore
 
 
 RUN_ID = int(time.time())
@@ -347,44 +349,28 @@ def try_s3cp(csv_args, row_args):
         try:
             if check_stop_copy():
                 return False
-            s3cp(csv_args, row_args)
+            s3cp(row_args)
         except DebugS3cpSuccess:
-            LOG.debug(
-                "Debug_copy_success - src: %s, dst: %s",
-                row_args["src"],
-                row_args["dst"],
-            )
             return True
         except AlreadyTransfered:
-            LOG.info(
-                "Transfer found in successful transfer db Skipping: %s,%s",
-                row_args["src"],
-                row_args["dst"],
-            )
             return True
         except DebugS3cpRetry:
-            LOG.debug(
-                "Debug_copy_retry - src: %s, dst: %s", row_args["src"], row_args["dst"]
-            )
             sleep(try_num + 1)
         except S3cpBadArgException:
             return False
+        except S3cpSuccess:
+            return True
         # todo: if boto copy fails we need to except here and sleep
     return False
 
 
-def s3cp(csv_args, row_args):
+def s3cp(row_args):
     """
     Copy a object to AWS s3 using python boto3
     The source object may be a local file or an object in s3
     The destination object must always be an s3 object
     Return True/False
     * args
-      * csv_args
-        * csv_args["file_path"]
-        * csv_args["err_tpe"]
-        * csv_args["cp_err_list"]
-        * csv_args["cp_owner_err_list"]
       * row_args
         * row_args["src"]
         * row_args["dst"]
@@ -392,6 +378,13 @@ def s3cp(csv_args, row_args):
         * row_args["usr"]
         * row_args["paswd"]
     """
+    # pylint: disable=too-many-locals
+    # pylint: disable=too-many-statements
+
+    # pylint does not like s3c.Object/s3c.copy etc. looks like bug in pylint
+    # pylint: disable=no-member
+    s3c = boto3.resource("s3")
+    print("s3cp")
 
     def check_s3_url(url):
         """ check if string is a valid aws s3 url """
@@ -401,50 +394,174 @@ def s3cp(csv_args, row_args):
 
     def check_local_file_exists(file_path):
         """ check if a local file exits """
-        if os.path.isfile(file_path):
+        # cwd = os.getcwd()
+        # path = cwd + os.sep + file_path
+        # print("path: ", path)
+        print("path string: ", repr(file_path))
+        if os.path.exists(str(file_path).rstrip()):
             return True
         return False
 
     def check_s3_obj_exists(s3_path):
         """ Check if an s3 object exists """
-        LOG.error("todo: check s3 obj %s", s3_path)
+        if not check_s3_url(s3_path):
+            return False
 
-    def get_src_type(src):
+        bucket = s3_path.split("/")[2]
+        key = "/".join(s3_path.split("/")[3:])
+
+        try:
+            s3c.Object(bucket, key).load()
+        except botocore.exceptions.ClientError as exc:
+            if exc.response["Error"]["Code"] == "404":
+                LOG.debug(
+                    "s3cp:check_s3_obj_exists: object %s does not exists. Got 404",
+                    s3_path,
+                )
+                return False
+            LOG.debug(
+                "s3cp:check_s3_obj_exists: error getting object %s: error: %s ",
+                s3_path,
+                exc,
+            )
+            return False
+        else:
+            return True  # The object does exist.
+
+    def is_src_s3(src):
         """ Check if src is a valid local file or object in s3 and return 'file', 's3', or None """
         # Check if src is local file or s3 obj and set copy type boto.copy() or boto.upload_file()
         if check_s3_url(src) and check_s3_obj_exists(src):
-            return "s3"
+            return True
+        return False
+
+    def is_src_file(src):
+        """ doc string """
         if check_local_file_exists(src):
+            return False
+        return False
+
+    def get_src_type(src):
+        """ doc string """
+        if is_src_s3(src):
+            return "s3"
+        if is_src_file(src):
             return "file"
-        msg = "src was not file or s3_object_url. src: {}. file: {} Line Number: {}".format(
-            src, csv_args["file_path"], row_args["line_num"]
-        )
-        ERRORS.add_error(msg)
         return None
 
-    # debug mode
+    def check_src_dst_same(src_type, src, dst):
+        """ check if the src and dst are the same size in bytes """
+        print("checking src dst")
+        if src_type == "s3":
+            print("src s3")
+            src_bucket = src.split("/")[2]
+            src_key = "/".join(src.split("/")[3:])
+            src_size = s3c.Object(src_bucket, src_key).content_length
+            print("size: ", src_size)
+        elif src_type == "file":
+            print("src file")
+            src_size = os.path.getsize(src)
+            print("size: ", src_size)
+        else:
+            print("not s3 or file ERRRRRRRROR")
+            return False
+
+        dst_bucket = dst.split("/")[2]
+        dst_key = "/".join(dst.split("/")[3:])
+        print("checking dst exists")
+        if check_s3_obj_exists(dst):
+            dst_size = s3c.Object(dst_bucket, dst_key).content_length
+            print("dst exists and is size: dst_size",)
+        else:
+            print("dst does not exists")
+            return False
+
+        print("src_size: ", src_size, "dst_size: ", dst_size)
+        if src_size == dst_size:
+            print("src size is dst size")
+            return True
+        print("src size is not dst size")
+        return False
+
+    ##############
+    # debug mode #
+    ##############
     if CFG.debug_int is not None:
         if not CFG.no_retry:
             if SUCCDB.check_values(row_args["src"], row_args["dst"]):
+                LOG.info(
+                    "Transfer found in successful transfer db Skipping: %s,%s",
+                    row_args["src"],
+                    row_args["dst"],
+                )
                 raise AlreadyTransfered()
         if CFG.debug_int >= random.randint(0, 100):
+            LOG.debug(
+                "Debug_copy_retry - src: %s, dst: %s", row_args["src"], row_args["dst"]
+            )
             raise DebugS3cpRetry()
+        LOG.debug(
+            "Debug_copy_success - src: %s, dst: %s", row_args["src"], row_args["dst"]
+        )
         raise DebugS3cpSuccess()
 
+    #############
+    # Copy mode #
+    #############
+
+
+
+
+
+
     src_type = get_src_type(row_args["src"])
+    print("src type: ", src_type, "for src: ", row_args["src"])
     if src_type is None:
         LOG.error(
-            "src type is not a present local file or an s3 object: %s", row_args["src"]
+            "src is not a present local file or an s3 object: %s", row_args["src"]
         )
         raise S3cpBadArgException()
 
-    if not check_s3_url(row_args["dst"]):
-        LOG.error(
-            "dst is not a present local file or an s3 object: %s", row_args["src"]
-        )
-        raise S3cpBadArgException()
+    print("past src type")
+    if not CFG.no_retry:
+        print("not no_retry")
+        if check_src_dst_same(src_type, row_args["src"], row_args["dst"]):
+            LOG.info(
+                "the source %s already exists in destination %s",
+                row_args["src"],
+                row_args["dst"],
+            )
+            raise AlreadyTransfered()
+        print("src_dst not the same")
 
-    # todo: add boto commands here
+    try:
+        src_bucket = row_args["src"].split("/")[2]
+        src_key = "/".join(row_args["src"].split("/")[3:])
+        dst_bucket = row_args["dst"].split("/")[2]
+        dst_key = "/".join(row_args["dst"].split("/")[3:])
+
+        copy_source = {"Bucket": str(src_bucket), "Key": str(src_key)}
+        extra_args = {
+            "ServerSideEncryption": "AES256",
+            "ACL": "bucket-owner-full-control",
+        }
+        s3c.meta.client.copy(copy_source, str(dst_bucket), str(dst_key), extra_args)
+    except Exception as exc:
+        raise exc
+    else:
+        LOG.info("successfully Copied %s to %s", row_args["src"], row_args["dst"])
+        SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
+        raise S3cpSuccess()
+
+
+"""
+    * check if src exists
+    * set src type
+    * if not CFG.no_retry:
+      * check if dst exists
+      * check if src and dst are the same
+    * do copy
+"""
 
 
 def get_csv_files(csv_dir):
@@ -634,6 +751,10 @@ class DebugS3cpRetry(CustomException):
 
 class DebugS3cpSuccess(CustomException):
     """ debug mode completed without failing random int % """
+
+
+class S3cpSuccess(CustomException):
+    """ Successfully copied file/obj to dst % """
 
 
 class AlreadyTransfered(CustomException):
