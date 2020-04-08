@@ -384,7 +384,6 @@ def s3cp(row_args):
     # pylint does not like s3c.Object/s3c.copy etc. looks like bug in pylint
     # pylint: disable=no-member
     s3c = boto3.resource("s3")
-    print("s3cp")
 
     def check_s3_url(url):
         """ check if string is a valid aws s3 url """
@@ -451,36 +450,24 @@ def s3cp(row_args):
 
     def check_src_dst_same(src_type, src, dst):
         """ check if the src and dst are the same size in bytes """
-        print("checking src dst")
         if src_type == "s3":
-            print("src s3")
             src_bucket = src.split("/")[2]
             src_key = "/".join(src.split("/")[3:])
             src_size = s3c.Object(src_bucket, src_key).content_length
-            print("size: ", src_size)
         elif src_type == "file":
-            print("src file")
             src_size = os.path.getsize(src)
-            print("size: ", src_size)
         else:
-            print("not s3 or file ERRRRRRRROR")
             return False
 
         dst_bucket = dst.split("/")[2]
         dst_key = "/".join(dst.split("/")[3:])
-        print("checking dst exists")
         if check_s3_obj_exists(dst):
             dst_size = s3c.Object(dst_bucket, dst_key).content_length
-            print("dst exists and is size: dst_size",)
         else:
-            print("dst does not exists")
             return False
 
-        print("src_size: ", src_size, "dst_size: ", dst_size)
         if src_size == dst_size:
-            print("src size is dst size")
             return True
-        print("src size is not dst size")
         return False
 
     ##############
@@ -515,16 +502,13 @@ def s3cp(row_args):
 
 
     src_type = get_src_type(row_args["src"])
-    print("src type: ", src_type, "for src: ", row_args["src"])
     if src_type is None:
         LOG.error(
             "src is not a present local file or an s3 object: %s", row_args["src"]
         )
         raise S3cpBadArgException()
 
-    print("past src type")
     if not CFG.no_retry:
-        print("not no_retry")
         if check_src_dst_same(src_type, row_args["src"], row_args["dst"]):
             LOG.info(
                 "the source %s already exists in destination %s",
@@ -532,7 +516,6 @@ def s3cp(row_args):
                 row_args["dst"],
             )
             raise AlreadyTransfered()
-        print("src_dst not the same")
 
     try:
         src_bucket = row_args["src"].split("/")[2]
