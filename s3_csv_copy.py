@@ -356,6 +356,8 @@ def try_s3cp(csv_args, row_args):
             return True
         except DebugS3cpRetry:
             sleep(try_num + 1)
+        except S3cpRetry:
+            sleep(try_num + 1)
         except S3cpBadArgException:
             return False
         except S3cpSuccess:
@@ -413,10 +415,10 @@ def s3cp(row_args):
             s3c.Object(bucket, key).load()
         except botocore.exceptions.ClientError as exc:
             if exc.response["Error"]["Code"] == "404":
-                LOG.debug(
-                    "s3cp:check_s3_obj_exists: object %s does not exists. Got 404",
-                    s3_path,
-                )
+                # LOG.debug(
+                #     "s3cp:check_s3_obj_exists: object %s does not exists. Got 404",
+                #     s3_path,
+                # )
                 return False
             LOG.debug(
                 "s3cp:check_s3_obj_exists: error getting object %s: error: %s ",
@@ -495,12 +497,6 @@ def s3cp(row_args):
     #############
     # Copy mode #
     #############
-
-
-
-
-
-
     src_type = get_src_type(row_args["src"])
     if src_type is None:
         LOG.error(
@@ -530,21 +526,12 @@ def s3cp(row_args):
         }
         s3c.meta.client.copy(copy_source, str(dst_bucket), str(dst_key), extra_args)
     except Exception as exc:
-        raise exc
+        LOG.error("unknow boto client exeption need to add it to the acceptions list.. error: %s ", exc)
+        raise S3cpRetry()
     else:
         LOG.info("successfully Copied %s to %s", row_args["src"], row_args["dst"])
         SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
         raise S3cpSuccess()
-
-
-"""
-    * check if src exists
-    * set src type
-    * if not CFG.no_retry:
-      * check if dst exists
-      * check if src and dst are the same
-    * do copy
-"""
 
 
 def get_csv_files(csv_dir):
@@ -742,6 +729,9 @@ class S3cpSuccess(CustomException):
 
 class AlreadyTransfered(CustomException):
     """ The dst exists test found the obj. skipping % """
+
+class S3cpRetry(CustomException):
+    """ The boto copy failed need to retry % """
 
 
 class S3cpBadArgException(CustomException):
