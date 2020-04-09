@@ -581,8 +581,8 @@ def get_logger(log_file):
 
 def check_stop_copy():
     """ check if a file called check_stop exists """
-    LOG.info("Found stop_copy. stopping copy processes")
     if os.path.exists("stop_copy"):
+        LOG.info("Found stop_copy. stopping copy processes")
         return True
     return False
 
