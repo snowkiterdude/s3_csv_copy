@@ -13,6 +13,7 @@ TODOS:
 """
 import argparse
 import concurrent.futures as futures
+import multiprocessing
 import csv
 import logging
 import os
@@ -74,19 +75,11 @@ def arg_parse():
 
     threads_help = """
     args:
-        --max-threads-files
+        --max-threads-files (set by number of CPU cores)
         --max-threads-lines-per-file
     Copies CSV files in parallel and also copies CSV lines in parallel
-    WARNING: Max threads will be the product of the two thread variables
+    Max threads will be the product of the two thread variables
         """
-    parser.add_argument(
-        "--max-threads-files",
-        "-mf",
-        dest="max_threads_files",
-        help="%s" % threads_help,
-        type=int,
-        default=4,
-    )
 
     parser.add_argument(
         "--max-threads-lines-per-file",
@@ -94,7 +87,7 @@ def arg_parse():
         dest="max_threads_lines_per_file",
         help="%s" % threads_help,
         type=int,
-        default=2,
+        default=32,
     )
 
     dst_owner_help = """
@@ -157,21 +150,22 @@ def arg_parse():
     )
 
     parser.add_argument(
-        "--sleep-timeout", "-s", dest="sleep_timeout", type=int, default=0
+        "--sleep-timeout", "-s", dest="sleep_timeout", type=int, default=900
     )
 
     parser.add_argument(
-        "--src-field-header", dest="src_field_header", type=str, default="src"
+        "--src-field-header", dest="src_field_header", type=str, default="source"
     )
 
     parser.add_argument(
-        "--dst-field-header", dest="dst_field_header", type=str, default="dst"
+        "--dst-field-header", dest="dst_field_header", type=str, default="destination"
     )
 
     cfg = parser.parse_args()
     cfg.db_dir = "db/{}".format(cfg.csv_dir)
     cfg.errors_dir = "db/{}/errors".format(cfg.csv_dir)
     cfg.succ_xfer_db_file = "db/{}/successful_transfers_db.yml".format(cfg.csv_dir)
+    cfg.max_threads_files = int(multiprocessing.cpu_count())
 
     if not os.path.exists(cfg.errors_dir):
         os.makedirs(cfg.errors_dir)
@@ -183,6 +177,13 @@ def main():
     """ main """
     LOG.info("Starting s3_csv_copy version %s", VERSION)
     LOG.debug("Using CSV directory: %s", CFG.csv_dir)
+    num_of_threads = CFG.max_threads_files + CFG.max_threads_lines_per_file
+    LOG.debug(
+        "Using %s file processes, Using %s threads per file. total threads: %s",
+        CFG.max_threads_files,
+        CFG.max_threads_lines_per_file,
+        num_of_threads,
+    )
     LOG.debug("Error types: %s", ERRORS.get_error_types())
 
     # credentials
@@ -205,7 +206,7 @@ def main():
         LOG.critical("Could not find any CSV files in CSV directory: %s", CFG.csv_dir)
         sys.exit(1)
 
-    with futures.ThreadPoolExecutor(max_workers=CFG.max_threads_files) as executor:
+    with futures.ProcessPoolExecutor(max_workers=CFG.max_threads_files) as executor:
         for file in csv_files:
             executor.submit(copy_csv_file, file)
 
