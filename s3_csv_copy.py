@@ -526,7 +526,10 @@ def s3cp(row_args):
         }
         s3c.meta.client.copy(copy_source, str(dst_bucket), str(dst_key), extra_args)
     except Exception as exc:
-        LOG.error("unknow boto client exeption need to add it to the acceptions list.. error: %s ", exc)
+        LOG.error(
+            "unknow boto client exeption need to add it to the acceptions list.. error: %s ",
+            exc,
+        )
         raise S3cpRetry()
     else:
         LOG.info("successfully Copied %s to %s", row_args["src"], row_args["dst"])
@@ -729,6 +732,7 @@ class S3cpSuccess(CustomException):
 
 class AlreadyTransfered(CustomException):
     """ The dst exists test found the obj. skipping % """
+
 
 class S3cpRetry(CustomException):
     """ The boto copy failed need to retry % """
