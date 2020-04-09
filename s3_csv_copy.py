@@ -177,7 +177,7 @@ def main():
     """ main """
     LOG.info("Starting s3_csv_copy version %s", VERSION)
     LOG.debug("Using CSV directory: %s", CFG.csv_dir)
-    num_of_threads = CFG.max_threads_files + CFG.max_threads_lines_per_file
+    num_of_threads = CFG.max_threads_files * CFG.max_threads_lines_per_file
     LOG.debug(
         "Using %s file processes, Using %s threads per file. total threads: %s",
         CFG.max_threads_files,
@@ -581,6 +581,7 @@ def get_logger(log_file):
 
 def check_stop_copy():
     """ check if a file called check_stop exists """
+    LOG.info("Found stop_copy. stopping copy processes")
     if os.path.exists("stop_copy"):
         return True
     return False
