@@ -6,7 +6,7 @@ TODOS:
   * better code documentation
   * add a readme
     * describe csv/tsv file(s) directory
-    * describe copy and dst_owner recopy
+    * describe copy
     * describe auth
 * Add boto copy functionality
 * Use an ACL rather than two copy operations
@@ -34,24 +34,9 @@ VERSION = "v0.01"
 def arg_parse():
     """ grabs augments with argparse """
 
-    run_id_help = """
-    RUN_ID = int(time.time())
-    Epoch time int: (seconds since Jan 1st, 1970 (midnight UTC/GMT))
-    Epoch to local time stamp: time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(RUN_ID))
-    View the last error output: # cat errors/$(ls -r errors | head -n 1)
-    """
-
-    description = """
-    ./s3_csv_copy.py
-    Copy objects in S3 using input from multiple CSV files.
-
-    {}
-    """.format(
-        run_id_help
-    )
-
     parser = argparse.ArgumentParser(
-        description="%s" % description, formatter_class=argparse.RawTextHelpFormatter
+        description="Copy objects in S3 using input from multiple CSV files.",
+        formatter_class=argparse.RawTextHelpFormatter,
     )
 
     csv_dir_help = """
@@ -73,38 +58,12 @@ def arg_parse():
         default="csv",
     )
 
-    threads_help = """
-    args:
-        --max-threads-files (set by number of CPU cores)
-        --max-threads-lines-per-file
-    Copies CSV files in parallel and also copies CSV lines in parallel
-    Max threads will be the product of the two thread variables
-        """
-
     parser.add_argument(
-        "--max-threads-lines-per-file",
-        "-mo",
-        dest="max_threads_lines_per_file",
-        help="%s" % threads_help,
+        "--max-threads-per-cpu-core",
+        "-t",
+        dest="max_threads_per_cpu_core",
         type=int,
-        default=32,
-    )
-
-    dst_owner_help = """
-    arg:
-        --dst-owner, -o
-    If present also copy the obj over itself using the destination owner account.
-    This will change the owner of the obj to the destination owner account instead
-    of the user used for the main transfer.
-        """
-    # Note: we should be able to do this by putting the correct obj ACL instead
-    parser.add_argument(
-        "--dst-owner",
-        "-o",
-        dest="dst_owner",
-        action="store_true",
-        default=False,
-        help="%s" % dst_owner_help,
+        default=2,
     )
 
     no_retry_help = """
@@ -141,6 +100,22 @@ def arg_parse():
         help="{}".format(debug_mode_help),
     )
 
+    boto_extra_args_help = """
+    arg:
+        --boto-extra-args
+    type:
+        string containing json
+    boto extra_args passed to boto during copy operations.
+    """
+
+    parser.add_argument(
+        "--boto-extra-args",
+        dest="boto_extra_args",
+        type=str,
+        default='{"ServerSideEncryption": "AES256","ACL": "bucket-owner-full-control",}',
+        help="{}".format(boto_extra_args_help),
+    )
+
     parser.add_argument(
         "--log-file", "-l", dest="log_file", type=str, default="s3_csv_copy.log"
     )
@@ -165,7 +140,7 @@ def arg_parse():
     cfg.db_dir = "db/{}".format(cfg.csv_dir)
     cfg.errors_dir = "db/{}/errors".format(cfg.csv_dir)
     cfg.succ_xfer_db_file = "db/{}/successful_transfers_db.yml".format(cfg.csv_dir)
-    cfg.max_threads_files = int(multiprocessing.cpu_count())
+    cfg.num_cpu_cores = int(multiprocessing.cpu_count())
 
     if not os.path.exists(cfg.errors_dir):
         os.makedirs(cfg.errors_dir)
@@ -177,36 +152,23 @@ def main():
     """ main """
     LOG.info("Starting s3_csv_copy version %s", VERSION)
     LOG.debug("Using CSV directory: %s", CFG.csv_dir)
-    num_of_threads = CFG.max_threads_files * CFG.max_threads_lines_per_file
+    num_of_threads = CFG.num_cpu_cores * CFG.max_threads_per_cpu_core
     LOG.debug(
-        "Using %s file processes, Using %s threads per file. total threads: %s",
-        CFG.max_threads_files,
-        CFG.max_threads_lines_per_file,
+        "Using %s CPU cores, Using %s threads per file, Total threads: %s",
+        CFG.num_cpu_cores,
+        CFG.max_threads_per_cpu_core,
         num_of_threads,
     )
-    LOG.debug("Error types: %s", ERRORS.get_error_types())
-
-    # credentials
-    if not get_env_var("AWS_ACCESS_KEY_ID") or not get_env_var("AWS_SECRET_ACCESS_KEY"):
-        msg = "No AWS Credentials: Please provide the AWS_ACCESS_KEY_ID and "
-        msg += "AWS_SECRET_ACCESS_KEY environment variables."
-        LOG.critical(msg)
-        sys.exit(1)
-    if CFG.dst_owner:
-        if not get_env_var("DST_OWNER_AWS_ACCESS_KEY_ID") or not get_env_var(
-            "DST_OWNER_AWS_SECRET_ACCESS_KEY"
-        ):
-            msg = "No AWS Credentials: Please provide the DST_OWNER_AWS_ACCESS_KEY_ID and "
-            msg += "DST_OWNER_AWS_SECRET_ACCESS_KEY environment variables."
-            LOG.critical(msg)
-            sys.exit(1)
 
     csv_files = get_csv_files(CFG.csv_dir)
     if not csv_files:
         LOG.critical("Could not find any CSV files in CSV directory: %s", CFG.csv_dir)
         sys.exit(1)
 
-    with futures.ProcessPoolExecutor(max_workers=CFG.max_threads_files) as executor:
+    # Note: still needs some work to spread out thread over multiple cores.
+    # switching back to threading for now.
+    # with futures.ProcessPoolExecutor(max_workers=CFG.num_cpu_cores) as executor:
+    with futures.ThreadPoolExecutor(max_workers=1) as executor:
         for file in csv_files:
             executor.submit(copy_csv_file, file)
 
@@ -223,7 +185,6 @@ def copy_csv_file(file_path):
     csv_args["file_path"] = str(file_path)
     csv_args["err_tpe"] = str(file_path) + "_errors"
     csv_args["cp_err_list"] = "failed_files_main_transfer"
-    csv_args["cp_owner_err_list"] = "failed_files_dst_owner"
     ERRORS.create_error_type(csv_args["err_tpe"])
 
     with open(csv_args["file_path"], newline="") as csvfile:
@@ -246,7 +207,7 @@ def copy_csv_file(file_path):
             return False
 
         with futures.ThreadPoolExecutor(
-            max_workers=CFG.max_threads_lines_per_file
+            max_workers=CFG.max_threads_per_cpu_core
         ) as executor:
             for row in reader:
                 row_args = {}
@@ -262,61 +223,13 @@ def copy_csv_file(file_path):
                     )
                     ERRORS.add_error(msg, csv_args["err_tpe"])
                     return False
-                executor.submit(cp_row, csv_args, row_args)
+                executor.submit(try_s3cp, csv_args, row_args)
     return True
-
-
-def cp_row(csv_args, row_args):
-    """
-    Start copy operations needed for each row.
-    Sets the user and password() for each copy operation.
-                e.g. AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY
-    * args
-      * csv_args
-        * csv_args["file_path"]
-        * csv_args["err_tpe"]
-        * csv_args["cp_err_list"]
-        * csv_args["cp_owner_err_list"]
-      * row_args
-        * row_args["src"]
-        * row_args["dst"]
-        * row_args["line_num"]
-    """
-    # todo: look into copying with ACL instead of copying twice
-
-    if check_stop_copy():
-        return False
-
-    row_args["usr"] = get_env_var("AWS_ACCESS_KEY_ID")
-    row_args["paswd"] = get_env_var("AWS_SECRET_ACCESS_KEY")
-    if try_s3cp(csv_args, row_args):
-        if CFG.dst_owner:
-            row_args["usr"] = get_env_var("DST_OWNER_AWS_ACCESS_KEY_ID")
-            row_args["paswd"] = get_env_var("DST_OWNER_AWS_SECRET_ACCESS_KEY")
-            if try_s3cp(csv_args, row_args):
-                # both copies where successful
-                SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
-                SUCCDB.add("{0},{0}".format(row_args["dst"]))
-                return True
-            # owner copy failed, but main transfer copy was successful
-            SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
-            msg = "{0},{0}".format(row_args["dst"])
-            ERRORS.add_error(
-                msg, csv_args["err_tpe"], csv_args["cp_owner_err_list"], False
-            )
-        else:
-            # copy successful, no owner copy needed
-            SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
-            return True
-    else:
-        # main transfer copy failed
-        msg = "{},{}".format(row_args["src"], row_args["dst"])
-        ERRORS.add_error(msg, csv_args["err_tpe"], csv_args["cp_err_list"], False)
-    return False
 
 
 def try_s3cp(csv_args, row_args):
     """
+    Start copy operations needed for each row.
     Try to copy an obj up to CFG.max_cp_tries times
     On fail sleep and try again
     After third try add an error the the errors dictionary
@@ -326,7 +239,6 @@ def try_s3cp(csv_args, row_args):
         * csv_args["file_path"]
         * csv_args["err_tpe"]
         * csv_args["cp_err_list"]
-        * csv_args["cp_owner_err_list"]
       * row_args
         * row_args["src"]
         * row_args["dst"]
@@ -350,20 +262,42 @@ def try_s3cp(csv_args, row_args):
         try:
             if check_stop_copy():
                 return False
+            row_args["usr"] = get_env_var("AWS_ACCESS_KEY_ID")
+            row_args["paswd"] = get_env_var("AWS_SECRET_ACCESS_KEY")
             s3cp(row_args)
+        except DebugS3cpRetry:
+            msg = "{},{}".format(row_args["src"], row_args["dst"])
+            ERRORS.add_error(msg, csv_args["err_tpe"], csv_args["cp_err_list"], False)
+            sleep(try_num + 1)
         except DebugS3cpSuccess:
+            LOG.debug(
+                "Debug_copy_success - src: %s, dst: %s",
+                row_args["src"],
+                row_args["dst"],
+            )
+            SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
             return True
         except AlreadyTransfered:
+            LOG.info(
+                "the source %s already exists in destination %s",
+                row_args["src"],
+                row_args["dst"],
+            )
             return True
-        except DebugS3cpRetry:
-            sleep(try_num + 1)
-        except S3cpRetry:
+        except S3cpRetry as exc:
+            LOG.error(
+                "unknown boto client exception - Exception: %s ", exc,
+            )
             sleep(try_num + 1)
         except S3cpBadArgException:
+            LOG.error(
+                "src is not a present local file or an s3 object: %s", row_args["src"]
+            )
             return False
         except S3cpSuccess:
+            LOG.info("successfully Copied %s to %s", row_args["src"], row_args["dst"])
+            SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
             return True
-        # todo: if boto copy fails we need to except here and sleep
     return False
 
 
@@ -396,10 +330,6 @@ def s3cp(row_args):
 
     def check_local_file_exists(file_path):
         """ check if a local file exits """
-        # cwd = os.getcwd()
-        # path = cwd + os.sep + file_path
-        # print("path: ", path)
-        print("path string: ", repr(file_path))
         if os.path.exists(str(file_path).rstrip()):
             return True
         return False
@@ -479,20 +409,12 @@ def s3cp(row_args):
     if CFG.debug_int is not None:
         if not CFG.no_retry:
             if SUCCDB.check_values(row_args["src"], row_args["dst"]):
-                LOG.info(
-                    "Transfer found in successful transfer db Skipping: %s,%s",
-                    row_args["src"],
-                    row_args["dst"],
-                )
                 raise AlreadyTransfered()
         if CFG.debug_int >= random.randint(0, 100):
             LOG.debug(
                 "Debug_copy_retry - src: %s, dst: %s", row_args["src"], row_args["dst"]
             )
             raise DebugS3cpRetry()
-        LOG.debug(
-            "Debug_copy_success - src: %s, dst: %s", row_args["src"], row_args["dst"]
-        )
         raise DebugS3cpSuccess()
 
     #############
@@ -500,18 +422,10 @@ def s3cp(row_args):
     #############
     src_type = get_src_type(row_args["src"])
     if src_type is None:
-        LOG.error(
-            "src is not a present local file or an s3 object: %s", row_args["src"]
-        )
         raise S3cpBadArgException()
 
     if not CFG.no_retry:
         if check_src_dst_same(src_type, row_args["src"], row_args["dst"]):
-            LOG.info(
-                "the source %s already exists in destination %s",
-                row_args["src"],
-                row_args["dst"],
-            )
             raise AlreadyTransfered()
 
     try:
@@ -521,20 +435,12 @@ def s3cp(row_args):
         dst_key = "/".join(row_args["dst"].split("/")[3:])
 
         copy_source = {"Bucket": str(src_bucket), "Key": str(src_key)}
-        extra_args = {
-            "ServerSideEncryption": "AES256",
-            "ACL": "bucket-owner-full-control",
-        }
-        s3c.meta.client.copy(copy_source, str(dst_bucket), str(dst_key), extra_args)
-    except Exception as exc:
-        LOG.error(
-            "unknow boto client exeption need to add it to the acceptions list.. error: %s ",
-            exc,
+        s3c.meta.client.copy(
+            copy_source, str(dst_bucket), str(dst_key), CFG.boto_extra_args
         )
-        raise S3cpRetry()
+    except Exception as exc:
+        raise S3cpRetry(exc)
     else:
-        LOG.info("successfully Copied %s to %s", row_args["src"], row_args["dst"])
-        SUCCDB.add("{},{}".format(row_args["src"], row_args["dst"]))
         raise S3cpSuccess()
 
 
@@ -568,7 +474,7 @@ def get_logger(log_file):
         lsh = logging.StreamHandler()
         lsh.setLevel(logging.DEBUG)
         log_formater = logging.Formatter(
-            "%(asctime)s;%(threadName)24s;%(levelname)s;%(message)s",
+            "%(asctime)19s;%(processName)15s;%(threadName)24s;%(levelname)8s;%(message)s",
             "%Y-%m-%d_%H:%M:%S",
         )
         lfh.setFormatter(log_formater)

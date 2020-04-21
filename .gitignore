@@ -5,3 +5,4 @@ errors
 *.log
 __pycache__
 db
+notes.txt

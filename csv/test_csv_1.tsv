@@ -1,4 +1,4 @@
-src	dst
+source	destination
 s3://tsv1_foo_1/1234.txt	s3://tsv1_bar_1/1234.txt
 s3://tsv1_foo_2/1234.txt	s3://tsv1_bar_2/1234.txt
 s3://tsv1_foo_3/1234.txt	s3://tsv1_bar_3/1234.txt

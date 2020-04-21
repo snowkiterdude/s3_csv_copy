@@ -1,4 +1,4 @@
-src,dst
+source,destination
 s3://snowkiterdude-test1/test_data/src/foobar1.txt,s3://snowkiterdude-test1/test_data/dst/foobar1.txt
 s3://snowkiterdude-test1/test_data/src/foobar2.txt,s3://snowkiterdude-test1/test_data/dst/foobar2.txt
 s3://snowkiterdude-test1/test_data/src/foobar3.txt,s3://snowkiterdude-test1/test_data/dst/foobar3.txt
