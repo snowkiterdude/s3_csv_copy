@@ -213,14 +213,13 @@ def s3cp(row_args):
     # pylint does not like s3c.Object/s3c.copy etc. looks like bug in pylint
     # pylint: disable=no-member
 
-
     session = boto3.Session(
         aws_access_key_id=row_args["AWS_ACCESS_KEY_ID"],
         aws_secret_access_key=row_args["AWS_SECRET_ACCESS_KEY"],
         aws_session_token=row_args["AWS_SESSION_TOKEN"],
-        region_name=row_args["AWS_REGION"]
+        region_name=row_args["AWS_REGION"],
     )
-    s3c = session.resource('s3')
+    s3c = session.resource("s3")
 
     def check_s3_url(url):
         """ check if string is a valid aws s3 url """
@@ -338,15 +337,6 @@ def s3cp(row_args):
         s3c.meta.client.copy(
             copy_source, str(dst_bucket), str(dst_key), CFG.boto_extra_args
         )
-
-
-    aws_access_key_id=ACCESS_KEY,
-    aws_secret_access_key=SECRET_KEY,
-    aws_session_token=SESSION_TOKEN,
-
-
-
-
     except Exception as exc:
         raise S3cpRetry(exc)
     else:
