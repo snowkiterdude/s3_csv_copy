@@ -364,6 +364,7 @@ def get_env_var(var):
     return envvar
 
 
+# todo: once all tested remove debug mode and SuccXferDB class
 class SuccXferDB:
     """ class to manage a list of successful obj transfers """
 
