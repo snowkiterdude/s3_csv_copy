@@ -70,9 +70,7 @@ def copy_csv_file(file_path):
 
     with open(csv_args["file_path"], newline="") as csvfile:
         try:
-            dialect = csv.Sniffer().sniff(csvfile.read(1024))
-            csvfile.seek(0)
-            reader = csv.DictReader(csvfile, dialect=dialect)
+            reader = csv.DictReader(csvfile)
         except csv.Error as err:
             ERRORS.add_error("{}: {}".format(csv_args["file_path"], err))
             return False
