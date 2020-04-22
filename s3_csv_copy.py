@@ -33,11 +33,11 @@ def main():
     """ main """
     LOG.info("Starting s3_csv_copy version %s", VERSION)
     LOG.debug("Using CSV directory: %s", CFG.csv_dir)
-    num_of_threads = CFG.num_cpu_cores * CFG.max_threads_per_cpu_core
+    num_of_threads = CFG.num_processes * CFG.max_threads_per_process
     LOG.debug(
-        "Using %s CPU cores, Using %s threads per file, Total threads: %s",
-        CFG.num_cpu_cores,
-        CFG.max_threads_per_cpu_core,
+        "Using %s processes, Using %s threads per file, Total threads: %s",
+        CFG.num_processes,
+        CFG.max_threads_per_process,
         num_of_threads,
     )
 
@@ -46,9 +46,9 @@ def main():
         LOG.critical("Could not find any CSV files in CSV directory: %s", CFG.csv_dir)
         sys.exit(1)
 
-    # Note: still needs some work to spread out thread over multiple cores.
+    # Note: still needs some work to spread out thread over multiple processes.
     # switching back to threading for now.
-    # with futures.ProcessPoolExecutor(max_workers=CFG.num_cpu_cores) as executor:
+    # with futures.ProcessPoolExecutor(max_workers=CFG.num_processes) as executor:
     with futures.ThreadPoolExecutor(max_workers=1) as executor:
         for file in csv_files:
             executor.submit(copy_csv_file, file)
@@ -87,7 +87,7 @@ def copy_csv_file(file_path):
             return False
 
         with futures.ThreadPoolExecutor(
-            max_workers=CFG.max_threads_per_cpu_core
+            max_workers=CFG.max_threads_per_process
         ) as executor:
             for row in reader:
                 row_args = {}

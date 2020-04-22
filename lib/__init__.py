@@ -34,14 +34,6 @@ def parse_cfg():
         default="csv",
     )
 
-    parser.add_argument(
-        "--max-threads-per-cpu-core",
-        "-t",
-        dest="max_threads_per_cpu_core",
-        type=int,
-        default=2,
-    )
-
     no_retry_help = """
     arg:
         --no-retry, -n
@@ -85,6 +77,14 @@ def parse_cfg():
     """
 
     parser.add_argument(
+        "--max-threads-per-process",
+        "-t",
+        dest="max_threads_per_process",
+        type=int,
+        default=12,
+    )
+
+    parser.add_argument(
         "--boto-extra-args",
         dest="boto_extra_args",
         type=str,
@@ -116,7 +116,7 @@ def parse_cfg():
     cfg.db_dir = "db/{}".format(cfg.csv_dir)
     cfg.errors_dir = "db/{}/errors".format(cfg.csv_dir)
     cfg.succ_xfer_db_file = "db/{}/successful_transfers_db.yml".format(cfg.csv_dir)
-    cfg.num_cpu_cores = int(multiprocessing.cpu_count())
+    cfg.num_processes = int(multiprocessing.cpu_count())
 
     if not os.path.exists(cfg.errors_dir):
         os.makedirs(cfg.errors_dir)
