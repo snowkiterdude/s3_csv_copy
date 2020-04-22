@@ -19,6 +19,8 @@ import sys
 import time
 import random
 import re
+import json
+import ntpath
 import yaml
 import boto3
 import botocore
@@ -69,8 +71,18 @@ def copy_csv_file(file_path):
     ERRORS.create_error_type(csv_args["err_tpe"])
 
     with open(csv_args["file_path"], newline="") as csvfile:
+        # todo: dialect = csv.Sniffer().sniff(csvfile.read(1024))
+        # fails on large tsv files
+        # need to fifure out a better way to deturmin the dialect
+        if get_filename_from_path(csv_args["file_path"]).endswith(".csv"):
+            delimiter = ","
+        elif get_filename_from_path(csv_args["file_path"]).endswith(".tsv"):
+            delimiter = "\t"
+        else:
+            return False
+
         try:
-            reader = csv.DictReader(csvfile)
+            reader = csv.DictReader(csvfile, delimiter=delimiter)
         except csv.Error as err:
             ERRORS.add_error("{}: {}".format(csv_args["file_path"], err))
             return False
@@ -359,6 +371,12 @@ def get_csv_files(csv_dir):
         LOG.critical("No such file or directory: %s", csv_dir)
         sys.exit(1)
     return csv_files
+
+
+def get_filename_from_path(path):
+    """ return filename from path """
+    head, tail = ntpath.split(path)
+    return tail or ntpath.basename(head)
 
 
 def check_stop_copy():
