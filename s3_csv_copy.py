@@ -333,7 +333,7 @@ def s3cp(row_args):
 
         copy_source = {"Bucket": str(src_bucket), "Key": str(src_key)}
         s3c.meta.client.copy(
-            copy_source, str(dst_bucket), str(dst_key), CFG.boto_extra_args
+            copy_source, str(dst_bucket), str(dst_key), json.loads(CFG.boto_extra_args)
         )
     except Exception as exc:
         raise S3cpRetry(exc)

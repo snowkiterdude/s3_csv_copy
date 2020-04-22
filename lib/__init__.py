@@ -88,7 +88,7 @@ def parse_cfg():
         "--boto-extra-args",
         dest="boto_extra_args",
         type=str,
-        default='{"ServerSideEncryption": "AES256","ACL": "bucket-owner-full-control",}',
+        default='{"ServerSideEncryption": "AES256","ACL": "bucket-owner-full-control"}',
         help="{}".format(boto_extra_args_help),
     )
 
